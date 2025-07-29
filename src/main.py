@@ -1,7 +1,10 @@
 import openai
 import os
-import speech_recognition as sr
 import pyttsx3
+import tempfile
+import sounddevice as sd
+import numpy as np
+import scipy.io.wavfile as wav
 
 def chat_with_openai(messages):
     api_key = os.getenv("OPENAI_API_KEY")
@@ -14,21 +17,34 @@ def chat_with_openai(messages):
     )
     return response.choices[0].message.content
 
-def recognize_speech():
-    recognizer = sr.Recognizer()
-    with sr.Microphone() as source:
-        print("Say something...")
-        audio = recognizer.listen(source)
-    try:
-        text = recognizer.recognize_google(audio)
-        print("You said:", text)
-        return text
-    except sr.UnknownValueError:
-        print("Sorry, I could not understand the audio.")
+def record_audio(duration=5, fs=16000):
+    print(f"Recording for {duration} seconds...")
+    audio = sd.rec(int(duration * fs), samplerate=fs, channels=1, dtype='int16')
+    sd.wait()
+    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.wav')
+    wav.write(temp_file.name, fs, audio)
+    print(f"Audio recorded to {temp_file.name}")
+    return temp_file.name
+
+def recognize_speech_whisper():
+    audio_path = record_audio()
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        print("OPENAI_API_KEY environment variable not set.")
         return None
-    except sr.RequestError as e:
-        print(f"Could not request results; {e}\nPlease check your internet connection or try again later.")
-        return None
+    openai.api_key = api_key
+    with open(audio_path, "rb") as audio_file:
+        try:
+            transcript = openai.audio.transcriptions.create(
+                model="whisper-1",
+                file=audio_file,
+                language="en"  # Restrict transcription to English
+            )
+            print("You said:", transcript.text)
+            return transcript.text
+        except Exception as e:
+            print(f"Whisper API error: {e}")
+            return None
 
 def speak_text(text):
     engine = pyttsx3.init()
@@ -60,16 +76,19 @@ if __name__ == "__main__":
     messages = [
         {"role": "system", "content": "You are a helpful assistant."}
     ]
-    while True:
-        user_input = recognize_speech()
-        if user_input:
-            messages.append({"role": "user", "content": user_input})
-            try:
-                reply = chat_with_openai(messages)
-                print("Assistant:", reply)
-                speak_text(reply)
-                messages.append({"role": "assistant", "content": reply})
-            except Exception as e:
-                print("Error:", e)
-        else:
-            print("Please try speaking again.")
+    try:
+        while True:
+            user_input = recognize_speech_whisper()
+            if user_input:
+                messages.append({"role": "user", "content": user_input})
+                try:
+                    reply = chat_with_openai(messages)
+                    print("Assistant:", reply)
+                    speak_text(reply)
+                    messages.append({"role": "assistant", "content": reply})
+                except Exception as e:
+                    print("Error:", e)
+            else:
+                print("Please try speaking again.")
+    except KeyboardInterrupt:
+        print("\nExiting. Goodbye!")
